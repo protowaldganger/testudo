@@ -9,6 +9,7 @@
 //
 
 import AppKit
+import ImageIO
 import Observation
 import UniformTypeIdentifiers
 
@@ -47,6 +48,13 @@ final class Queue {
         static let keepMetadata = "keepMetadata"
         static let playSound = "playSound"
         static let keepOriginals = "keepOriginals"
+        static let trashOriginals = "trashOriginals"
+        static let extraEffort = "extraEffort"
+    }
+
+    static var replacesViaTrash: Bool {
+        let defaults = UserDefaults.standard
+        return !defaults.bool(forKey: Key.keepOriginals) && defaults.bool(forKey: Key.trashOriginals)
     }
 
     private(set) var items: [FileItem] = []
@@ -69,7 +77,7 @@ final class Queue {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
-        panel.allowedContentTypes = [.png, .jpeg, .webP]
+        panel.allowedContentTypes = [.png, .jpeg, .webP, .heic, .heif]
         panel.prompt = "Compress"
         panel.message = UserDefaults.standard.bool(forKey: Key.keepOriginals)
             ? "Choose images or folders. Smaller copies are saved next to them."
@@ -88,7 +96,7 @@ final class Queue {
         }
     }
 
-    private static let extensions: Set<String> = ["png", "jpg", "jpeg", "jpe", "webp"]
+    private static let extensions: Set<String> = ["png", "jpg", "jpeg", "jpe", "webp", "heic", "heif"]
 
     private static func files(in urls: [URL]) -> [URL] {
         var files: [URL] = []
@@ -109,9 +117,10 @@ final class Queue {
 
     private func enqueue(_ urls: [URL]) {
         let options = currentOptions()
-        // Saving copies needs the folder, not just the file, so ask for any
-        // folder Testudo may not write in yet. Once per folder, remembered.
-        if UserDefaults.standard.bool(forKey: Key.keepOriginals) {
+        // Saving copies, or a new file while the original goes to the Trash,
+        // needs the folder, not just the file, so ask for any folder Testudo
+        // may not write in yet. Once per folder, remembered.
+        if UserDefaults.standard.bool(forKey: Key.keepOriginals) || Self.replacesViaTrash {
             FolderAccess.prepare(Set(urls.map { $0.deletingLastPathComponent() }))
         }
         var known = Dictionary(items.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
@@ -165,7 +174,8 @@ final class Queue {
         let defaults = UserDefaults.standard
         return tt_options(lossy: defaults.bool(forKey: Key.lossy) ? 1 : 0,
                           quality: Int32(defaults.double(forKey: Key.quality).rounded()),
-                          keep_metadata: defaults.bool(forKey: Key.keepMetadata) ? 1 : 0)
+                          keep_metadata: defaults.bool(forKey: Key.keepMetadata) ? 1 : 0,
+                          extra_effort: defaults.bool(forKey: Key.extraEffort) ? 1 : 0)
     }
 
     private func schedule(_ item: FileItem, _ options: tt_options) {
@@ -174,9 +184,10 @@ final class Queue {
         pending += 1
         let url = item.url
         let copy = UserDefaults.standard.bool(forKey: Key.keepOriginals) ? Copy.url(for: url) : nil
+        let viaTrash = Self.replacesViaTrash
         workers.addOperation { [weak self] in
             DispatchQueue.main.async { if item.status == .waiting { item.status = .working } }
-            let outcome = Compressor.run(url, options, saveAs: copy)
+            let outcome = Compressor.run(url, options, saveAs: copy, trashOriginal: viaTrash)
             DispatchQueue.main.async { self?.finish(item, outcome) }
         }
     }
@@ -226,7 +237,9 @@ enum Compressor {
     nonisolated(unsafe) static var cancelled = false
 
     // With `copy`, the original is left alone and the result goes there.
-    static func run(_ url: URL, _ options: tt_options, saveAs copy: URL?) -> Outcome {
+    // With `trashOriginal`, the original goes to the Trash and the result
+    // takes its place, so the Finder's Put Back undoes it.
+    static func run(_ url: URL, _ options: tt_options, saveAs copy: URL?, trashOriginal: Bool) -> Outcome {
         if cancelled { return .cancelled }
         let manager = FileManager.default
         let data: Data
@@ -239,17 +252,28 @@ enum Compressor {
         }
 
         var output: UnsafeMutablePointer<UInt8>?
-        var size = 0
+        var produced = 0
         let status = data.withUnsafeBytes { raw in
-            tt_compress(raw.bindMemory(to: UInt8.self).baseAddress, raw.count, options, &output, &size)
+            tt_compress(raw.bindMemory(to: UInt8.self).baseAddress, raw.count, options, &output, &produced)
         }
         defer { tt_free(output) }
 
-        if status == TT_UNSUPPORTED { return .unsupported }
-        if status == TT_FAILED { return .failed("Damaged or unusual image") }
-        guard status == TT_SMALLER, let output, size > 0, size < data.count else { return .noGain(data.count) }
+        let result: Data
+        if status == TT_UNSUPPORTED {
+            // Not one of the C engine's formats: maybe a photo from an iPhone.
+            switch Heic.compress(data, options) {
+            case .notHeic: return .unsupported
+            case .unsupported: return .unsupported
+            case .noGain: return .noGain(data.count)
+            case .smaller(let smaller): result = smaller
+            }
+        } else {
+            if status == TT_FAILED { return .failed("Damaged or unusual image") }
+            guard status == TT_SMALLER, let output, produced > 0, produced < data.count else { return .noGain(data.count) }
+            result = Data(bytesNoCopy: output, count: produced, deallocator: .none)
+        }
+        let size = result.count
 
-        let result = Data(bytesNoCopy: output, count: size, deallocator: .none)
         if let copy {
             do {
                 try result.write(to: copy, options: .atomic)
@@ -263,6 +287,11 @@ enum Compressor {
         let now = try? manager.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
         guard now == stamp else { return .failed("Changed while compressing") }
 
+        if trashOriginal {
+            if let problem = Replace.viaTrash(url, with: result) { return .failed(problem) }
+            return .smaller(data.count, size, nil)
+        }
+
         // Written in place, so the file keeps its permissions, tags, dates
         // and Finder comments, and sandboxed access to it is enough.
         do {
@@ -274,6 +303,139 @@ enum Compressor {
             return .failed("Can’t write the file")
         }
         return .smaller(data.count, size, nil)
+    }
+}
+
+// Replacing a file so that the original can come back: the new version is
+// written beside it under a hidden name, the original goes to the Trash, and
+// the new one takes its name. Its Finder tags, comments, permissions and
+// creation date are carried over first. If any step fails, the original
+// stays where it was, or is safe in the Trash with the new file next to it.
+enum Replace {
+    static func viaTrash(_ url: URL, with data: Data) -> String? {
+        let manager = FileManager.default
+        let folder = url.deletingLastPathComponent()
+        let temporary = folder.appendingPathComponent(".\(url.lastPathComponent).testudo-\(UUID().uuidString)")
+        do {
+            try data.write(to: temporary)
+        } catch {
+            return "No permission to save here"
+        }
+        copyAttributes(from: url, to: temporary)
+        do {
+            try manager.trashItem(at: url, resultingItemURL: nil)
+        } catch {
+            try? manager.removeItem(at: temporary)
+            return "Can’t move the original to the Trash"
+        }
+        do {
+            try manager.moveItem(at: temporary, to: url)
+        } catch {
+            return "Original is in the Trash; the new file is hidden beside it"
+        }
+        return nil
+    }
+
+    private static func copyAttributes(from source: URL, to target: URL) {
+        let manager = FileManager.default
+        if let attributes = try? manager.attributesOfItem(atPath: source.path) {
+            var kept: [FileAttributeKey: Any] = [:]
+            for key in [FileAttributeKey.posixPermissions, .creationDate, .extensionHidden] {
+                if let value = attributes[key] { kept[key] = value }
+            }
+            try? manager.setAttributes(kept, ofItemAtPath: target.path)
+        }
+        // Extended attributes hold the Finder tags and comments.
+        source.withUnsafeFileSystemRepresentation { from in
+            target.withUnsafeFileSystemRepresentation { to in
+                guard let from, let to else { return }
+                let length = listxattr(from, nil, 0, XATTR_NOFOLLOW)
+                guard length > 0 else { return }
+                var names = [CChar](repeating: 0, count: length)
+                guard listxattr(from, &names, length, XATTR_NOFOLLOW) == length else { return }
+                var start = 0
+                for index in 0..<length where names[index] == 0 {
+                    let name = names.withUnsafeBufferPointer { String(cString: $0.baseAddress! + start) }
+                    start = index + 1
+                    let size = getxattr(from, name, nil, 0, 0, XATTR_NOFOLLOW)
+                    guard size >= 0 else { continue }
+                    var value = [UInt8](repeating: 0, count: max(size, 1))
+                    let read = getxattr(from, name, &value, size, 0, XATTR_NOFOLLOW)
+                    guard read == size else { continue }
+                    setxattr(to, name, value, size, 0, XATTR_NOFOLLOW)
+                }
+            }
+        }
+    }
+}
+
+// HEIC and HEIF, the iPhone's photo format, through macOS's own codec.
+// Turning them into JPEGs would roughly double their size, so they stay HEIC:
+// - Lossless: the image data is copied untouched and only the metadata is
+//   left out (camera details, location). Nothing to do with Keep metadata on.
+// - Lossy: the photo is encoded again at the chosen quality, and kept only
+//   when that saves at least a tenth, since every new encoding costs a little
+//   detail. HDR, depth and Portrait data come along.
+enum Heic {
+    enum Result { case notHeic, unsupported, noGain, smaller(Data) }
+
+    private static let types: Set<String> = ["public.heic", "public.heif", "public.heics"]
+
+    // The extra images a photo can carry beside the picture itself.
+    private static let auxiliary: [CFString] = [
+        kCGImageAuxiliaryDataTypeHDRGainMap, kCGImageAuxiliaryDataTypeISOGainMap,
+        kCGImageAuxiliaryDataTypeDepth, kCGImageAuxiliaryDataTypeDisparity,
+        kCGImageAuxiliaryDataTypePortraitEffectsMatte,
+        kCGImageAuxiliaryDataTypeSemanticSegmentationSkinMatte,
+        kCGImageAuxiliaryDataTypeSemanticSegmentationHairMatte,
+        kCGImageAuxiliaryDataTypeSemanticSegmentationTeethMatte,
+        kCGImageAuxiliaryDataTypeSemanticSegmentationGlassesMatte,
+        kCGImageAuxiliaryDataTypeSemanticSegmentationSkyMatte
+    ]
+
+    static func compress(_ data: Data, _ options: tt_options) -> Result {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let type = CGImageSourceGetType(source), types.contains(type as String) else { return .notHeic }
+        // Bursts and live sequences hold several images; leave them alone.
+        guard CGImageSourceGetCount(source) == 1 else { return .unsupported }
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
+        let orientation = properties[kCGImagePropertyOrientation] ?? 1
+
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output as CFMutableData, type, 1, nil) else { return .unsupported }
+
+        if options.lossy != 0 {
+            var changes: [CFString: Any] = [
+                kCGImageDestinationLossyCompressionQuality: Double(options.quality) / 100
+            ]
+            if options.keep_metadata == 0 {
+                for dictionary in [kCGImagePropertyExifDictionary, kCGImagePropertyGPSDictionary,
+                                   kCGImagePropertyIPTCDictionary, kCGImagePropertyMakerAppleDictionary,
+                                   kCGImagePropertyExifAuxDictionary] {
+                    changes[dictionary] = kCFNull
+                }
+                changes[kCGImagePropertyOrientation] = orientation
+            }
+            CGImageDestinationAddImageFromSource(destination, source, 0, changes as CFDictionary)
+            for kind in auxiliary {
+                if let info = CGImageSourceCopyAuxiliaryDataInfoAtIndex(source, 0, kind) {
+                    CGImageDestinationAddAuxiliaryDataInfo(destination, kind, info)
+                }
+            }
+            guard CGImageDestinationFinalize(destination) else { return .unsupported }
+            return output.length < data.count * 9 / 10 ? .smaller(output as Data) : .noGain
+        }
+
+        guard options.keep_metadata == 0 else { return .noGain }
+        let changes: [CFString: Any] = [
+            kCGImageDestinationMetadata: CGImageMetadataCreateMutable(),
+            kCGImageDestinationMergeMetadata: false,
+            kCGImageMetadataShouldExcludeGPS: true,
+            kCGImageMetadataShouldExcludeXMP: true,
+            kCGImageDestinationOrientation: orientation
+        ]
+        guard CGImageDestinationCopyImageSource(destination, source, changes as CFDictionary, nil) else { return .noGain }
+        return output.length < data.count ? .smaller(output as Data) : .noGain
     }
 }
 

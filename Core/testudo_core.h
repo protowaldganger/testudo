@@ -29,6 +29,7 @@ typedef struct {
     int lossy;           // 0: never change a pixel. 1: allow visually-lossless savings.
     int quality;         // 1-100, used when lossy (PNG minimum is quality - 15).
     int keep_metadata;   // 0: strip EXIF/text/thumbnails (colour profile and rotation are always kept).
+    int extra_effort;    // 1: PNG data is packed with Zopfli. A few percent smaller, many times slower.
 } tt_options;
 
 tt_format tt_detect(const uint8_t *data, size_t size);

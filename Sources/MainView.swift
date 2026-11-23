@@ -22,8 +22,8 @@ struct MainView: View {
                     Label("Drop Images Here", systemImage: "photo.on.rectangle.angled")
                 } description: {
                     Text(keepOriginals
-                         ? "PNG, JPEG and WebP, or folders of them. Smaller copies are saved next to the originals."
-                         : "PNG, JPEG and WebP, or folders of them. Each file is replaced with a smaller version.")
+                         ? "PNG, JPEG, WebP and HEIC, or folders of them. Smaller copies are saved next to the originals."
+                         : "PNG, JPEG, WebP and HEIC, or folders of them. Each file is replaced with a smaller version.")
                 } actions: {
                     Button("Choose Images…") { queue.choose() }
                 }
@@ -31,11 +31,14 @@ struct MainView: View {
                 table
             }
         }
-        .frame(minWidth: 480, minHeight: 280)
+        .frame(minWidth: 480, maxWidth: .infinity, minHeight: 280, maxHeight: .infinity)
+        // The whole window takes drops, so the outline and the target match it.
+        .contentShape(Rectangle())
+        .tint(Style.accent)
         .overlay {
             if targeted {
                 RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .strokeBorder(Color.primary, lineWidth: 2)
                     .padding(6)
                     .allowsHitTesting(false)
             }
@@ -137,7 +140,7 @@ private struct StatusIcon: View {
                 .accessibilityLabel("Compressing")
         case .smaller:
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+                .foregroundStyle(Style.positive)
                 .accessibilityLabel("Smaller")
         case .noGain:
             Image(systemName: "checkmark.circle")
@@ -145,7 +148,7 @@ private struct StatusIcon: View {
                 .accessibilityLabel("Already as small as it gets")
         case .unsupported, .failed:
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.yellow)
+                .foregroundStyle(Style.caution)
                 .accessibilityLabel("Not compressed")
         }
     }

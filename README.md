@@ -2,7 +2,7 @@
 
 # Testudo
 
-Makes PNG, JPEG and WebP images smaller. Drop them in and get smaller versions, either in place or as new files.
+Makes PNG, JPEG, WebP and HEIC images smaller. Drop them in and get smaller versions, either in place or as new files.
 
 Made by protowaldganger.
 
@@ -19,6 +19,7 @@ Requires macOS 27 on Apple silicon. About 1 MB.
 - In the Finder, right-click images and choose Quick Actions › Compress with Testudo.
 - A short sound plays when everything you added at once is done. It uses a sound built into macOS, so the app ships none.
 - Files are only replaced when the result is smaller. Double-click a row to show the file in the Finder.
+- To be able to undo, turn on Settings › Move originals to the Trash. The original then goes to the Trash and Put Back in the Finder brings it back. The first time in a folder, Testudo asks once for permission to use it.
 - To keep your originals, set Settings › Compressed images to Save as new files. photo.png then gets a smaller copy, photo-compressed.png, beside it. The first time Testudo saves in a folder you only dropped single files from, it asks once for permission to use that folder.
 - On a Force Touch trackpad, the quality slider clicks at each step.
 
@@ -33,6 +34,11 @@ Color profiles and rotation are always kept. Camera details, location and editin
 | PNG | Best filter per image, recompressed with libdeflate, smallest exact color type | libimagequant palette |
 | JPEG | mozjpeg: optimized, progressive, no quality loss | mozjpeg re-encode |
 | WebP | Metadata removed without re-encoding, lossless files re-encoded losslessly | libwebp re-encode |
+| HEIC | Metadata removed without re-encoding | macOS's own encoder, kept only if at least 10% smaller. HDR, depth and Portrait data are kept. |
+
+Extra effort for PNG (Settings) packs PNG data with Zopfli instead of libdeflate. Files usually get another 3 to 8% smaller, but compressing takes many times longer.
+
+HEIC photos stay HEIC: as JPEGs they would be about twice the size.
 
 Animated WebP files are left as they are.
 

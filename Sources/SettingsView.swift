@@ -11,11 +11,9 @@ struct SettingsView: View {
     @AppStorage(Queue.Key.keepMetadata) private var keepMetadata = false
     @AppStorage(Queue.Key.playSound) private var playSound = true
     @AppStorage(Queue.Key.keepOriginals) private var keepOriginals = false
+    @AppStorage(Queue.Key.trashOriginals) private var trashOriginals = false
+    @AppStorage(Queue.Key.extraEffort) private var extraEffort = false
     @ObservedObject private var updates = UpdateCheck.shared
-
-    private var version: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,8 +32,9 @@ struct SettingsView: View {
                         .frame(width: 200)
                     }
                     .disabled(!lossy)
+                    Toggle("Extra effort for PNG", isOn: $extraEffort)
                 } footer: {
-                    Text("Lossless keeps every pixel. Lossy makes PNG and WebP files far smaller, and re-encodes a JPEG only when it was saved above this quality.")
+                    Text("Lossless keeps every pixel. Lossy makes PNG, WebP and HEIC files far smaller, and re-encodes a JPEG only when it was saved above this quality. Extra effort packs PNGs with Zopfli: usually 3 to 8% smaller again, but many times slower.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -45,9 +44,14 @@ struct SettingsView: View {
                         Text("Replace the originals").tag(false)
                         Text("Save as new files").tag(true)
                     }
+                    if !keepOriginals {
+                        Toggle("Move originals to the Trash", isOn: $trashOriginals)
+                    }
                 } footer: {
                     Text(keepOriginals
                          ? "The original stays untouched. photo.png gets a smaller copy, photo-compressed.png, in the same folder."
+                         : trashOriginals
+                         ? "The original goes to the Trash, so Put Back in the Finder brings it back. The first time in a folder, Testudo asks once for permission to use it."
                          : "The original is replaced, but only once the smaller version is complete and only if it is smaller.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -75,12 +79,11 @@ struct SettingsView: View {
             .formStyle(.grouped)
             .scrollDisabled(true)
 
-            Text("Testudo \(version) · by protowaldganger")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            Byline(name: "Testudo")
                 .padding(.bottom, 16)
         }
         .frame(width: 460)
+        .tint(Style.accent)
         .fixedSize(horizontal: false, vertical: true)
     }
 }

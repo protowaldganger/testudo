@@ -22,7 +22,8 @@ C_SOURCES := Core/testudo_core.c \
                         Vendor/libwebp/src/utils/*.c Vendor/libwebp/src/mux/*.c Vendor/libwebp/src/demux/*.c \
                         Vendor/libwebp/sharpyuv/*.c) \
              $(wildcard Vendor/libdeflate/lib/*.c Vendor/libdeflate/lib/arm/*.c) \
-             Vendor/lodepng/lodepng.c
+             Vendor/lodepng/lodepng.c \
+             $(wildcard Vendor/zopfli/*.c)
 
 OBJECTS  := $(C_SOURCES:%.c=$(OBJ)/%.o)
 SWIFT    := $(wildcard Sources/*.swift)
@@ -32,7 +33,7 @@ CFLAGS   := -target $(TARGET) -Os -DNDEBUG -w -ffunction-sections -fdata-section
             -ffile-prefix-map=$(CURDIR)=. \
             -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP \
             -ICore -IVendor/mozjpeg -IVendor/libimagequant -IVendor/libwebp -IVendor/libwebp/src \
-            -IVendor/libdeflate -IVendor/lodepng
+            -IVendor/libdeflate -IVendor/lodepng -IVendor/zopfli
 
 SWIFTFLAGS := -target $(TARGET) -swift-version 5 -Osize -wmo -parse-as-library -module-name Testudo \
               -import-objc-header Core/testudo_core.h -file-prefix-map $(CURDIR)=. \

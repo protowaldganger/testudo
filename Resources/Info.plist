@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>1.1</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.graphics-design</string>
 	<key>LSMinimumSystemVersion</key>
@@ -42,6 +42,8 @@
 				<string>public.png</string>
 				<string>public.jpeg</string>
 				<string>org.webmproject.webp</string>
+				<string>public.heic</string>
+				<string>public.heif</string>
 			</array>
 		</dict>
 		<dict>
@@ -72,6 +74,8 @@
 				<string>public.png</string>
 				<string>public.jpeg</string>
 				<string>org.webmproject.webp</string>
+				<string>public.heic</string>
+				<string>public.heif</string>
 				<string>public.folder</string>
 			</array>
 		</dict>

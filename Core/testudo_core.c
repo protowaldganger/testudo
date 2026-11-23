@@ -5,6 +5,7 @@
 //  PNG:  lodepng re-encodes losslessly in the smallest colour type it can
 //        prove is exact, trying three filter strategies. Lossy mode adds
 //        libimagequant (pngquant's engine) and keeps whichever is smaller.
+//        Extra effort packs the winner with Zopfli instead of libdeflate.
 //  JPEG: mozjpeg rewrites the existing coefficients (optimised Huffman tables,
 //        progressive scans), so no pixel changes. Lossy mode also re-encodes
 //        at the chosen quality, but only when the original is above it.
@@ -24,6 +25,7 @@
 
 #include "lodepng.h"
 #include "libdeflate.h"
+#include "zopfli.h"
 #include "libimagequant.h"
 #include "jpeglib.h"
 #include "webp/decode.h"
@@ -107,10 +109,29 @@ static void png_keep_only_colour_chunks(LodePNGInfo *info, int keep_metadata) {
 #ifndef TT_FINAL_LEVEL
 #define TT_FINAL_LEVEL 11
 #endif
+// Not a libdeflate level: asks png_deflate for Zopfli.
+#define TT_ZOPFLI_LEVEL 100
+
+// Zopfli tries many ways to split and encode the same data and keeps the
+// shortest. Fewer rounds on big images, where each round is expensive and
+// the gain per round is smallest; that is how zopflipng does it too.
+static unsigned png_zopfli(unsigned char **out, size_t *out_size, const unsigned char *in, size_t in_size) {
+    ZopfliOptions options;
+    ZopfliInitOptions(&options);
+    options.numiterations = in_size < 2000000 ? 15 : 5;
+    unsigned char *result = NULL;
+    size_t result_size = 0;
+    ZopfliCompress(&options, ZOPFLI_FORMAT_ZLIB, in, in_size, &result, &result_size);
+    if (!result || !result_size) { free(result); return 111; }
+    *out = result;
+    *out_size = result_size;
+    return 0;
+}
 
 static unsigned png_deflate(unsigned char **out, size_t *out_size, const unsigned char *in,
                             size_t in_size, const LodePNGCompressSettings *settings) {
     int level = settings->custom_context ? *(const int *)settings->custom_context : TT_FINAL_LEVEL;
+    if (level == TT_ZOPFLI_LEVEL) return png_zopfli(out, out_size, in, in_size);
     struct libdeflate_compressor *compressor = libdeflate_alloc_compressor(level);
     if (!compressor) return 83;
     size_t bound = libdeflate_zlib_compress_bound(compressor, in_size);
@@ -183,7 +204,7 @@ static unsigned char *png_encode(const unsigned char *pixels, unsigned w, unsign
 // Finds the filter strategy that compresses best at a quick level, then
 // encodes with it at full strength. Keeps the result if it is the smallest.
 static void png_encode_best(const unsigned char *pixels, unsigned w, unsigned h,
-                            const LodePNGColorMode *raw, const LodePNGInfo *info,
+                            const LodePNGColorMode *raw, const LodePNGInfo *info, int final_level,
                             uint8_t **best, size_t *best_size) {
     static const LodePNGFilterStrategy strategies[] = { LFS_MINSUM, LFS_ENTROPY, LFS_ZERO };
     LodePNGFilterStrategy winner = LFS_MINSUM;
@@ -199,12 +220,12 @@ static void png_encode_best(const unsigned char *pixels, unsigned w, unsigned h,
     }
     if (!winner_size) return;
     size_t size;
-    unsigned char *png = png_encode(pixels, w, h, raw, info, winner, TT_FINAL_LEVEL, &size);
+    unsigned char *png = png_encode(pixels, w, h, raw, info, winner, final_level, &size);
     keep_smaller(best, best_size, png, size, free);
 }
 
 static void png_quantize(const uint8_t *data, size_t size, const LodePNGInfo *info,
-                         int quality, uint8_t **best, size_t *best_size) {
+                         int quality, int final_level, uint8_t **best, size_t *best_size) {
     unsigned char *rgba = NULL;
     unsigned w, h;
     LodePNGState decoder;
@@ -238,7 +259,7 @@ static void png_quantize(const uint8_t *data, size_t size, const LodePNGInfo *in
         lodepng_palette_add(&raw, palette->entries[i].r, palette->entries[i].g,
                             palette->entries[i].b, palette->entries[i].a);
     }
-    png_encode_best(indices, w, h, &raw, info, best, best_size);
+    png_encode_best(indices, w, h, &raw, info, final_level, best, best_size);
     lodepng_color_mode_cleanup(&raw);
 
 done:
@@ -266,9 +287,10 @@ static tt_result compress_png(const uint8_t *data, size_t size, tt_options o, ui
 
     uint8_t *best = NULL;
     size_t best_size = 0;
-    png_encode_best(pixels, w, h, &state.info_png.color, &state.info_png, &best, &best_size);
+    int final_level = o.extra_effort ? TT_ZOPFLI_LEVEL : TT_FINAL_LEVEL;
+    png_encode_best(pixels, w, h, &state.info_png.color, &state.info_png, final_level, &best, &best_size);
     free(pixels);
-    if (o.lossy) png_quantize(data, size, &state.info_png, o.quality, &best, &best_size);
+    if (o.lossy) png_quantize(data, size, &state.info_png, o.quality, final_level, &best, &best_size);
     lodepng_state_cleanup(&state);
 
     // Read fine but could not be written back exactly (say, a colour profile
